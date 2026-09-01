@@ -4953,9 +4953,7 @@ def test_the_interface_language_keeps_its_region(
     assert _activate_body(client, access_token, rom)["gui_language"] == "pt-br"
 
 
-def test_the_interface_language_is_left_out_when_unset(
-    client, access_token, rom: Rom
-):
+def test_the_interface_language_is_left_out_when_unset(client, access_token, rom: Rom):
     """No locale means the broker keeps whatever the container is configured
     with, rather than being handed an empty one to pin."""
     assert "gui_language" not in _activate_body(client, access_token, rom)
