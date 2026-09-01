@@ -799,6 +799,16 @@ _EMULATOR_CAPABILITIES: dict[str, _SlotCapabilities] = {
         "autosave_slot": 10,
         "has_memory_card": False,
     },
+    # ScummVM saves are its states, so the broker's one working slot is both
+    # what a save-state writes and what a resume loads. No memory card exists,
+    # and its own slot 0 autosave rides the save archive rather than the state
+    # routes.
+    "scummvm": {
+        "max_slots": 0,
+        "has_autosave": True,
+        "autosave_slot": 10,
+        "has_memory_card": False,
+    },
 }
 
 
