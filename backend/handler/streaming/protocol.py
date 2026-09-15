@@ -7,9 +7,10 @@ for the config each one takes.
 
 from __future__ import annotations
 
+import posixpath
 from functools import lru_cache
 from typing import Any
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 from config import STREAMING_SAVE_TIMEOUT
 from logger.logger import log
@@ -19,12 +20,27 @@ from logger.logger import log
 ACK_TIMEOUT = 5
 
 
-def room_url_on(host: str, room_url: str) -> str:
+def _under_subfolder(path: str, subfolder: str) -> bool:
+    """Whether a resolved room path stays under the broker's own subfolder.
+
+    Percent-encoded traversal is decoded and collapsed first, since a proxy in
+    front of the container may do the same before the path is routed.
+    """
+    normalized = posixpath.normpath(unquote(path))
+    return normalized == subfolder or normalized.startswith(f"{subfolder}/")
+
+
+def room_url_on(host: str, room_url: str, subfolder: str) -> str:
     """A broker's room URL resolved against the container it came from.
 
-    The reply is the broker's own, and urljoin keeps an absolute URL (or an
-    opaque `javascript:`) verbatim, so an answer that leaves the configured
-    host is dropped rather than handed to a browser as an iframe source.
+    Args:
+        host: the container's configured stream host.
+        room_url: the URL the broker's reply carried.
+        subfolder: the path this broker's rooms live under, or "" when it
+            serves the container root and its rooms are not confined.
+
+    Returns:
+        The resolved URL, or `host` when the reply left the container.
     """
     if not room_url:
         return host
@@ -39,6 +55,17 @@ def room_url_on(host: str, room_url: str) -> str:
     )
     if not on_host:
         log.warning("broker answered with a room URL off its own host, ignoring it")
+        return host
+    # On a same-origin container the host is a bare path, so staying on the
+    # host only means staying a path: an absolute reply could name any route
+    # RomM serves, including RomM's own.
+    if subfolder and not _under_subfolder(target.path, subfolder):
+        log.warning(
+            "broker answered with room path '%s', which is outside the "
+            "subfolder '%s' it serves, ignoring it",
+            target.path,
+            subfolder,
+        )
         return host
     return resolved
 
@@ -62,6 +89,9 @@ class BrokerProtocol:
     # What save-state may take, and the key its reply reports success under.
     save_state_timeout: int
     _save_state_key: str
+    # The path this broker's routes and rooms live under, "" when it serves
+    # the container root.
+    subfolder: str
 
     def session_route(self, path: str) -> str:
         """A session control verb (`/launch`, `/save-state`, `/stop`, ...)."""
@@ -100,6 +130,7 @@ class LegacyBrokerProtocol(BrokerProtocol):
     reports_launch_phase = False
     save_state_timeout = ACK_TIMEOUT
     _save_state_key = "status"
+    subfolder = ""
 
     def session_route(self, path: str) -> str:
         return path
@@ -169,12 +200,11 @@ class WebstationProtocol(BrokerProtocol):
 
     def stream_url(self, host: str, launch_result: Any) -> str:
         # Activate answers with the room URL carrying the claiming user's
-        # token, relative to the container root. An absolute path replaces
-        # whatever path the configured host carries.
+        # token, as an absolute path built from the broker's own SUBFOLDER.
         room_url = (
             str(launch_result.get("url", "")) if isinstance(launch_result, dict) else ""
         )
-        return room_url_on(host, room_url)
+        return room_url_on(host, room_url, self.subfolder)
 
 
 LEGACY_PROTOCOL = LegacyBrokerProtocol()

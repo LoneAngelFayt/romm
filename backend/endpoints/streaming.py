@@ -999,7 +999,7 @@ async def join_session(
 
     return JoinedSessionSchema(
         platform=platform,
-        host=room_url_on(candidate.host, room_url),
+        host=room_url_on(candidate.host, room_url, candidate.protocol.subfolder),
         label=candidate.label,
         rom_id=session.get("rom_id"),
         rom_name=session.get("rom_name"),
@@ -1316,7 +1316,7 @@ async def claim_desktop_session(
         raise
 
     room_url = str(launch_result.get("url", "")) if launch_result else ""
-    host = room_url_on(container.host, room_url)
+    host = room_url_on(container.host, room_url, container.protocol.subfolder)
 
     await stamp_launched(session_key, session)
     log.info("desktop session claimed, container=%s", session_key)

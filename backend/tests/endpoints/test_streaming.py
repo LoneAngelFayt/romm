@@ -57,7 +57,7 @@ from handler.streaming.config import (
     reset_cache,
     resolve_entry,
 )
-from handler.streaming.protocol import protocol_for
+from handler.streaming.protocol import LEGACY_PROTOCOL, protocol_for, room_url_on
 from models.assets import MemoryCard, MemoryCardVersion, Save, Screenshot, State
 from models.permission import HiddenEntity, PermEntity
 from models.platform import Platform
@@ -941,7 +941,7 @@ def test_launch_phase_is_pushed_while_a_webstation_unpacks(
     def _activate(*args, **kwargs):
         # Long enough for the phase watcher to tick twice.
         time.sleep(0.25)
-        return {"url": "/room/x"}
+        return {"url": "/streaming/room/x"}
 
     with _streaming(_webstation_for(rom)):
         with (
@@ -1430,7 +1430,8 @@ def _claim_webstation_ok(client, token, rom_id):
     """Claim a game on a webstation container, whose launch goes through
     activate rather than the per-emulator mods' /launch."""
     with patch(
-        "handler.streaming.webstation.activate", return_value={"url": "/room/x"}
+        "handler.streaming.webstation.activate",
+        return_value={"url": "/streaming/room/x"},
     ):
         return _claim(client, token, rom_id)
 
@@ -1506,6 +1507,62 @@ def test_desktop_ignores_a_room_url_that_leaves_the_container(
         response, _ = _desktop(client, access_token, key, url=room_url)
 
     assert response.json()["host"] == "http://192.168.1.10:3000"
+
+
+def test_a_same_origin_room_path_outside_the_subfolder_is_refused(
+    client, access_token, caplog
+):
+    """A same-origin container is configured as a bare path, so a reply that
+    stays a path is still on the host while naming any route RomM serves."""
+    entry = _webstation(host="/streaming", subfolder="/streaming")
+    romm_logger = logging.getLogger("romm")
+    romm_logger.addHandler(caplog.handler)
+    try:
+        with _streaming(entry):
+            key = _key_of(_first_container("ps2"))
+            with caplog.at_level(logging.WARNING, logger="romm"):
+                response, _ = _desktop(
+                    client, access_token, key, url="/streaming-9/room/x"
+                )
+    finally:
+        romm_logger.removeHandler(caplog.handler)
+    assert response.json()["host"] == "/streaming"
+    assert "outside the subfolder '/streaming'" in caplog.text
+
+
+def test_a_same_origin_room_path_under_the_subfolder_is_served(client, access_token):
+    """The reply the broker is documented to send, which confinement has to
+    keep serving: an absolute path built from its own SUBFOLDER."""
+    with _streaming(_webstation(host="/streaming", subfolder="/streaming")):
+        key = _key_of(_first_container("ps2"))
+        response, _ = _desktop(client, access_token, key, url="/streaming/room/abc")
+    assert response.json()["host"] == "/streaming/room/abc"
+
+
+def test_a_bare_origin_host_still_takes_the_brokers_room_path(client, access_token):
+    """A host that is only an origin has no route of RomM's to be confused
+    with, and the broker's absolute path lands on it."""
+    entry = _webstation(host="https://webstation.example.com", subfolder="/streaming")
+    with _streaming(entry):
+        key = _key_of(_first_container("ps2"))
+        response, _ = _desktop(client, access_token, key, url="/streaming/room/abc")
+    assert (
+        response.json()["host"] == "https://webstation.example.com/streaming/room/abc"
+    )
+
+
+def test_percent_encoded_traversal_out_of_the_subfolder_is_refused():
+    """A proxy in front of the container may decode and collapse the path
+    before routing it, so the check has to see what the proxy will."""
+    refused = room_url_on("/streaming", "/streaming/%2e%2e/api/roms", "/streaming")
+    assert refused == "/streaming"
+
+
+def test_a_legacy_relative_room_url_still_resolves_beside_the_host():
+    """The legacy broker serves the container root, so its relative reply
+    resolves off the configured path. Confinement is the webstation protocol's
+    and must not reach the deprecated shape."""
+    assert room_url_on("/streaming", "room/x", LEGACY_PROTOCOL.subfolder) == "/room/x"
 
 
 def test_desktop_and_a_game_block_each_other(client, access_token):
@@ -3654,7 +3711,7 @@ def test_claim_hydrates_the_picked_save(
 ):
     """The claim carries the pick all the way into the activate body."""
     picked, *_ = _three_archives(rom, admin_user)
-    activate = MagicMock(return_value={"url": "/room/x"})
+    activate = MagicMock(return_value={"url": "/streaming/room/x"})
     with _streaming(_clearing_webstation(rom)):
         with (
             patch("handler.streaming.webstation.activate", activate),
@@ -3683,7 +3740,7 @@ def test_claim_with_an_unrestorable_pick_never_reserves_a_container(
     loose = db_save_handler.add_save(
         _save_for(rom, admin_user, "Game.srm", "retroarch", "h1")
     )
-    activate = MagicMock(return_value={"url": "/room/x"})
+    activate = MagicMock(return_value={"url": "/streaming/room/x"})
     with _streaming(_clearing_webstation(rom)):
         with (
             patch("handler.streaming.webstation.activate", activate),
@@ -3973,7 +4030,7 @@ def test_webstation_resume_state_is_pushed_after_activate(
         _state_for(rom, admin_user, "Game.03.p2s", "pcsx2")
     )
     order = MagicMock()
-    order.activate.return_value = {"url": "/room/x"}
+    order.activate.return_value = {"url": "/streaming/room/x"}
     order.push.return_value = True
     with _streaming(_webstation_for(rom)):
         with (
@@ -4006,7 +4063,7 @@ def test_webstation_claim_without_a_state_boots_clean(client, access_token, rom:
     """A restored archive puts in-game saves back, nothing more: no picked
     state means no resume_slot, even though the archive carries the exit
     state of the last session."""
-    activate = MagicMock(return_value={"url": "/room/x"})
+    activate = MagicMock(return_value={"url": "/streaming/room/x"})
     with _streaming(_webstation_for(rom)):
         with (
             patch("handler.streaming.webstation.activate", activate),
@@ -4082,7 +4139,7 @@ def test_releasing_a_webstation_session_pulls_the_exit_state(
         with (
             patch(
                 "handler.streaming.webstation.activate",
-                return_value={"url": "/room/x"},
+                return_value={"url": "/streaming/room/x"},
             ),
             patch(
                 "handler.streaming.saves.hydrate_saves_to_webstation",
@@ -4119,7 +4176,7 @@ def test_releasing_without_saving_files_no_state(client, access_token, rom: Rom)
         with (
             patch(
                 "handler.streaming.webstation.activate",
-                return_value={"url": "/room/x"},
+                return_value={"url": "/streaming/room/x"},
             ),
             patch(
                 "handler.streaming.saves.hydrate_saves_to_webstation",
@@ -5393,7 +5450,10 @@ def _claim_multiplayer(client, token, rom_id, multiplayer=True):
     speaks stubbed out."""
     with (
         patch("handler.streaming.commands.launch"),
-        patch("handler.streaming.webstation.activate", return_value={"url": "/room/x"}),
+        patch(
+            "handler.streaming.webstation.activate",
+            return_value={"url": "/streaming/room/x"},
+        ),
     ):
         return client.post(
             "/api/streaming/sessions",
@@ -5416,7 +5476,8 @@ def test_the_activate_body_carries_the_multiplayer_flag(client, access_token, ro
     rather than the activate helper: the body itself is what matters."""
     with _streaming(_ws_for(rom)):
         with patch(
-            "handler.streaming.broker.request", return_value={"url": "/room/x"}
+            "handler.streaming.broker.request",
+            return_value={"url": "/streaming/room/x"},
         ) as request:
             client.post(
                 "/api/streaming/sessions",
@@ -5431,7 +5492,8 @@ def _activate_body(client, token, rom: Rom) -> dict:
     """Claim through the webstation protocol and return the activate body."""
     with _streaming(_ws_for(rom)):
         with patch(
-            "handler.streaming.broker.request", return_value={"url": "/room/x"}
+            "handler.streaming.broker.request",
+            return_value={"url": "/streaming/room/x"},
         ) as request:
             client.post(
                 "/api/streaming/sessions",
@@ -5714,12 +5776,12 @@ def test_joining_a_multiplayer_session_returns_its_room_url(
         _claim_multiplayer(client, access_token, rom.id)
         with patch(
             "handler.streaming.webstation.join",
-            return_value={"url": "/webstation/?token=abc"},
+            return_value={"url": "/streaming/?token=abc"},
         ):
             response = _join(client, viewer_access_token, rom.platform_slug)
 
     assert response.status_code == 200
-    assert response.json()["host"] == "http://192.168.1.10:3000/webstation/?token=abc"
+    assert response.json()["host"] == "http://192.168.1.10:3000/streaming/?token=abc"
 
 
 def test_joining_ignores_a_room_url_that_leaves_the_container(
@@ -5807,7 +5869,7 @@ def test_a_joiner_cannot_drive_the_session(
         _claim_multiplayer(client, access_token, rom.id)
         with patch(
             "handler.streaming.webstation.join",
-            return_value={"url": "/webstation/?token=abc"},
+            return_value={"url": "/streaming/?token=abc"},
         ):
             assert (
                 _join(client, viewer_access_token, rom.platform_slug).status_code == 200
